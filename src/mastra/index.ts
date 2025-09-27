@@ -9,6 +9,12 @@ import { z } from "zod";
 
 import { sharedPostgresStorage } from "./storage";
 import { inngest, inngestServe } from "./inngest";
+import { cryptoTradingAgent } from "./agents/cryptoTradingAgent";
+import { cryptoBotWorkflow } from "./workflows/cryptoBotWorkflow";
+import { cryptoPriceTool } from "./tools/cryptoPriceTool";
+import { cryptoNewsTool } from "./tools/cryptoNewsTool";
+import { marketAnalysisTool } from "./tools/marketAnalysisTool";
+import { registerTelegramTrigger } from "../triggers/telegramTriggers";
 
 class ProductionPinoLogger extends MastraLogger {
   protected logger: pino.Logger;
@@ -53,13 +59,13 @@ class ProductionPinoLogger extends MastraLogger {
 
 export const mastra = new Mastra({
   storage: sharedPostgresStorage,
-  agents: {},
-  workflows: {},
+  agents: { cryptoTradingAgent },
+  workflows: { cryptoBotWorkflow },
   mcpServers: {
     allTools: new MCPServer({
       name: "allTools",
       version: "1.0.0",
-      tools: {},
+      tools: { cryptoPriceTool, cryptoNewsTool, marketAnalysisTool },
     }),
   },
   bundler: {
@@ -122,6 +128,41 @@ export const mastra = new Mastra({
         // 3. Establishing a publish-subscribe system for real-time monitoring
         //    through the workflow:${workflowId}:${runId} channel
       },
+      ...registerTelegramTrigger({
+        triggerType: "telegram/message",
+        handler: async (mastra, triggerInfo) => {
+          const logger = mastra.getLogger();
+          logger?.info("📝 [Telegram Trigger] New message received:", { triggerInfo });
+
+          const chatId = triggerInfo.payload?.message?.chat?.id;
+          const messageText = triggerInfo.params.message;
+          const userName = triggerInfo.params.userName;
+
+          if (!chatId || !messageText) {
+            logger?.warn("📝 [Telegram Trigger] Missing required data", { chatId, messageText });
+            return;
+          }
+
+          // Create unique thread ID for conversation continuity
+          const threadId = `telegram/${chatId}`;
+
+          logger?.info("📝 [Telegram Trigger] Starting workflow", { 
+            chatId, 
+            threadId, 
+            userName,
+            messageLength: messageText.length 
+          });
+
+          const run = await mastra.getWorkflow("cryptoBotWorkflow").createRunAsync();
+          await run.start({
+            inputData: {
+              message: messageText,
+              threadId: threadId,
+              chatId: chatId,
+            }
+          });
+        },
+      }),
     ],
   },
   logger:
